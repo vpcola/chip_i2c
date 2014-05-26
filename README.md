@@ -43,8 +43,8 @@ Pi, we need to register the board information during initialization
 of the BCM2708 initialization. We need to edit the 
 arch/arm/mach-bcm2708/bcm2708.c from the kernel sources.
 
-
-*-- arch/arm/mach-bcm2708/bcm2708.c --*
+```C++
+/*-- arch/arm/mach-bcm2708/bcm2708.c --*/
 675 #if defined(CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC) || defined(CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC_MODULE)
 676 static struct platform_device snd_rpi_iqaudio_dac_device = {
 677         .name = "snd-rpi-iqaudio-dac",
@@ -76,6 +76,7 @@ arch/arm/mach-bcm2708/bcm2708.c from the kernel sources.
 844     i2c_register_board_info(1, chip_i2c_devices, ARRAY_SIZE(chip_i2c_devices));
 ...
 858 }
+```
 
 After making the necessary changes to the kernel source tree above, 
 we can then compile and load our device driver.
@@ -117,12 +118,12 @@ VII. Loading and testing the kernel module.
 ===========================================
 
 To load the driver from raspberry pi, execute the following command.
-
+```
 pi@raspberrypi ~ $ sudo insmod chip_i2c.ko
-
+```
 The command above loads the driver, you can check the kernel messages
 by running the dmesg command:
-
+```
 pi@raspberrypi ~ $ sudo dmesg
 [10800.515086] chip_i2c: chip_i2c_probe
 [10800.515137] chip_i2c 1-0021: chip_init_client
@@ -131,7 +132,7 @@ pi@raspberrypi ~ $ sudo dmesg
 [10800.515554] chip_i2c 1-0021: chip_write_value
 [10800.515905] chip_i2c 1-0021: chip_write_value : write reg [01] with val [ff] returned [0]
 pi@raspberrypi ~ $
-
+```
 The log message indicates that the driver was probed (chip_i2c_probe),
 and the init functions are called.
 
@@ -140,30 +141,30 @@ VIII. Testing the driver with sysfs
 
 By default, the driver exposes 2 attributes - chip_led and
 chip_switch. These are attribute files exposed on :
-
+```
 pi@raspberrypi /sys/bus/i2c/drivers/chip_i2c/1-0021 $ ls
 chip_led  chip_switch  driver  modalias  name  power  subsystem  uevent
 pi@raspberrypi /sys/bus/i2c/drivers/chip_i2c/1-0021 $ ls -lrt
 -r--r--r-- 1 root root 4096 May 26 14:34 chip_switch
 --w--w--w- 1 root root 4096 May 26 14:34 chip_led
 pi@raspberrypi /sys/bus/i2c/drivers/chip_i2c/1-0021 $ 
-
+```
 chip_switch and chip_led are user settable, meaning non-root
 users can read/write values to the driver.
 
 We can read values to chip_swich by:
-
+```
 pi@raspberrypi /sys/bus/i2c/drivers/chip_i2c/1-0021 $ cat chip_switch
 15
 pi@raspberrypi /sys/bus/i2c/drivers/chip_i2c/1-0021 $
-
+```
 Great! we can now read the value of the dip switches on our i2c 
 device.
 
 And writing to our LED's are accomplished by:
-
+```
 pi@raspberrypi /sys/bus/i2c/drivers/chip_i2c/1-0021 $ echo 255 > ./chip_led
-
+```
 The action above turns on all our LED's.
 
 
