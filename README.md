@@ -101,6 +101,7 @@ different. I'm also using cross compiler with hard float enabled for ARM devices
 If you have a different cross compiler, you may have to change this also.
 
 Compiling the module is accomplished by this command:
+```
 >make ARCH=arm CROSS_COMPILE=${CCPREFIX}
 make -C /opt/cross/raspberry/linux SUBDIRS=/opt/cross/raspberry/module_source/chip_i2c modules
 make[1]: Entering directory `/opt/cross/raspberry/linux'
@@ -111,7 +112,7 @@ make[1]: Entering directory `/opt/cross/raspberry/linux'
   LD [M]  /opt/cross/raspberry/module_source/chip_i2c/chip_i2c.ko
   make[1]: Leaving directory `/opt/cross/raspberry/linux'
 >
-
+```
 Once compiled, you can then transfer the generated chip_i2c.ko to your raspberry pi.
 
 VII. Loading and testing the kernel module.
