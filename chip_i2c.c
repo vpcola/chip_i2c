@@ -26,6 +26,11 @@
 #include <linux/mutex.h>
 #include <linux/err.h>
 #include <linux/sysfs.h>
+#include <linux/device.h>
+#include <linux/fs.h>
+
+
+#define CHIP_I2C_DEVICE_NAME    "chip_i2c"
 
 /* Define the addresses to scan. Of course, we know that our
  * hardware is found on 0x21, the chip_i2c_detect() function
@@ -53,6 +58,27 @@ struct chip_data {
     /* TODO: additional client driver data here */
 };
 
+/**
+ * The following variables are used by the exposed 
+ * fileops (character device driver) functions to
+ * allow our driver to be opened by normal file operations
+ * - open/close/read/write from user space.
+ */
+static struct class * chip_i2c_class = NULL;
+static struct device * chip_i2c_device = NULL;
+static int chip_i2c_major;
+
+/* Define the global i2c_client structure used by this
+ * driver. We use this for the file operations (chardev)
+ * functions to access the i2c_client.
+ */
+static struct i2c_client * chip_i2c_client = NULL;
+
+/* We define a mutex so that only one process at a time
+* can access our driver at /dev. Any other process
+* attempting to open this driver will return -EBUSY.
+*/
+static DEFINE_MUTEX(chip_i2c_mutex);
 
 /* We define the MCP23017 registers. We only need to set the
  * direction registers for input and output
@@ -110,6 +136,81 @@ int chip_write_value(struct i2c_client *client, u8 reg, u16 value)
 
     return ret;
 }
+
+/* The following functions are used by this device drivers
+* to provide a char device functionality.
+*/
+static int chip_i2c_open(struct inode * inode, struct file *fp)
+{
+   printk("%s: Attempt to open our device\n", __FUNCTION__);
+   /* Our driver only allows writing to our LED's */
+   if ((fp->f_flags & O_ACCMODE) != O_WRONLY)
+       return -EACCES;
+
+   /* We need to ensure that only one process can 
+    * access the file handle at one time
+    */
+   if (!mutex_trylock(&chip_i2c_mutex))
+   {
+       printk("%s: Device currently in use!\n", __FUNCTION__);
+       return -EBUSY;
+   }
+
+   /* We olso need to check if the chip driver (client)
+    * is already loaded, otherwise write/read to/from
+    * i2c device will fail.
+    */
+   if (chip_i2c_client == NULL)
+       return -ENODEV;
+
+   return 0;
+}
+
+static int chip_i2c_close(struct inode * inode, struct file * fp)
+{
+   printk("%s: Freeing /dev resource\n", __FUNCTION__);
+
+   mutex_unlock(&chip_i2c_mutex);
+   return 0;
+}
+
+/* Our file op write function, note that we only write the 
+* last byte sent to the leds and discard the rest.
+*/
+static ssize_t chip_i2c_write(struct file * fp, const char __user * buf,
+        size_t count, loff_t * offset)
+{
+    int x, numwrite = 0;
+    char * tmp;
+
+    /* We'll limit the number of bytes written out */
+    if (count > 512)
+        count = 512;
+
+    tmp = memdup_user(buf, count);
+    if (IS_ERR(tmp))
+        return PTR_ERR(tmp);
+
+    printk("%s: Write operation with [%d] bytes\n", __FUNCTION__, count);
+    for (x = 0; x < count; x++)
+        if (chip_write_value(chip_i2c_client, REG_CHIP_PORTA_LOUT, (u16) tmp[x]) == 0)
+            numwrite++;
+
+    return numwrite;
+}
+
+/* Our file operations table, thiw will used by the 
+ * initializzation code (probe) to create a character
+ * device on /dev. 
+ */
+static const struct file_operations chip_i2c_fops = {
+    .owner = THIS_MODULE,
+    .llseek = no_llseek,
+    .write = chip_i2c_write,
+    .open = chip_i2c_open,
+    .release = chip_i2c_close
+};
+
 
 /* Our driver attributes/variables are currently exported via sysfs. 
  * For this driver, we export two attributes - chip_led and chip_switch
@@ -199,6 +300,7 @@ static void chip_init_client(struct i2c_client *client)
 static int chip_i2c_probe(struct i2c_client *client,
     const struct i2c_device_id *id)
 {
+    int retval = 0;
     struct device * dev = &client->dev;
     struct chip_data *data = NULL;
 
@@ -223,12 +325,61 @@ static int chip_i2c_probe(struct i2c_client *client,
     /* initialize our hardware */
     chip_init_client(client);
 
+    /* In our arbitrary hardware, we only have
+     * one instance of this existing on the i2c bus.
+     * Therefore we set the global pointer of this
+     * client.
+     */
+    chip_i2c_client = client;
+
+    /* We now create our character device driver */
+    chip_i2c_major = register_chrdev(0, CHIP_I2C_DEVICE_NAME,
+        &chip_i2c_fops);
+    if (chip_i2c_major < 0)
+    {
+        retval = chip_i2c_major;
+        printk("%s: Failed to register char device!\n", __FUNCTION__);
+        goto out;
+    }
+
+    chip_i2c_class = class_create(THIS_MODULE, CHIP_I2C_DEVICE_NAME);
+    if (IS_ERR(chip_i2c_class))
+    {
+        retval = PTR_ERR(chip_i2c_class);
+        printk("%s: Failed to create class!\n", __FUNCTION__);
+        goto unreg_chrdev;
+    }
+
+    chip_i2c_device = device_create(chip_i2c_class, NULL, 
+        MKDEV(chip_i2c_major, 0),
+        NULL,
+        CHIP_I2C_DEVICE_NAME "_leds");
+    if (IS_ERR(chip_i2c_device))
+    {
+        retval = PTR_ERR(chip_i2c_device);
+        printk("%s: Failed to create device!\n", __FUNCTION__);
+        goto unreg_class;
+    }
+
+    /* Initialize the mutex for /dev fops clients */
+    mutex_init(&chip_i2c_mutex);
+
 
     // We now register our sysfs attributs. 
     device_create_file(dev, &dev_attr_chip_led);
     device_create_file(dev, &dev_attr_chip_switch);
 
     return 0;
+    /* Cleanup on failed operations */
+
+unreg_class:
+    class_unregister(chip_i2c_class);
+    class_destroy(chip_i2c_class);
+unreg_chrdev:
+    unregister_chrdev(chip_i2c_major, CHIP_I2C_DEVICE_NAME);
+    printk("%s: Driver initialization failed!\n", __FUNCTION__);
+out:
+    return retval;
 }
 
 /* This function is called whenever the bus or the driver is
@@ -241,8 +392,15 @@ static int chip_i2c_remove(struct i2c_client * client)
 
     printk("chip_i2c: %s\n", __FUNCTION__);
 
+    chip_i2c_client = NULL;
+
     device_remove_file(dev, &dev_attr_chip_led);
     device_remove_file(dev, &dev_attr_chip_switch);
+
+    device_destroy(chip_i2c_class, MKDEV(chip_i2c_major, 0));
+    class_unregister(chip_i2c_class);
+    class_destroy(chip_i2c_class);
+    unregister_chrdev(chip_i2c_major, CHIP_I2C_DEVICE_NAME);
 
     return 0;
 }
@@ -271,7 +429,7 @@ static int chip_i2c_detect(struct i2c_client * client,
     // in order for this driver to be loaded.
     if (address == 0x21)
     {
-        name = "chip_i2c";
+        name = CHIP_I2C_DEVICE_NAME;
         dev_info(&adapter->dev,
             "Chip device found at 0x%02x\n", address);
     }else
@@ -292,7 +450,7 @@ static int chip_i2c_detect(struct i2c_client * client,
 static struct i2c_driver chip_driver = {
     .class      = I2C_CLASS_HWMON,
     .driver = {
-            .name = "chip_i2c",
+            .name = CHIP_I2C_DEVICE_NAME,
     },
     .probe          = chip_i2c_probe,
     .remove         = chip_i2c_remove,
